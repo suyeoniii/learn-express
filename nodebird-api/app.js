@@ -1,70 +1,97 @@
 const express = require("express");
-const cookieParser = require("cookie-parser");
-const morgan = require("morgan");
-const path = require("path");
-const session = require("express-session");
-const nunjucks = require("nunjucks");
-const dotenv = require("dotenv");
-const passport = require("passport");
+const jwt = require("jsonwebtoken");
 
-dotenv.config();
-const indexRouter = require("./routes");
-const authRouter = require("./routes/auth");
-const { sequelize } = require("./models");
-const passportConfig = require("./passport");
+const { verifyToken } = require("./middlewares");
+const { Domain, User, Post, Hashtag } = require("../models");
 
-const app = express();
-passportConfig(); // 패스포트 설정
-app.set("port", process.env.PORT || 8002);
-app.set("view engine", "html");
-nunjucks.configure("views", {
-  express: app,
-  watch: true,
-});
-sequelize
-  .sync({ force: false })
-  .then(() => {
-    console.log("데이터베이스 연결 성공");
-  })
-  .catch((err) => {
-    console.error(err);
-  });
+const router = express.Router();
 
-app.use(morgan("dev"));
-app.use(express.static(path.join(__dirname, "public")));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-app.use(cookieParser(process.env.COOKIE_SECRET));
-app.use(
-  session({
-    resave: false,
-    saveUninitialized: false,
-    secret: process.env.COOKIE_SECRET,
-    cookie: {
-      httpOnly: true,
-      secure: false,
-    },
-  })
-);
-app.use(passport.initialize());
-app.use(passport.session());
-
-app.use("/", indexRouter);
-app.use("/auth", authRouter);
-
-app.use((req, res, next) => {
-  const error = new Error(`${req.method} ${req.url} 라우터가 없습니다.`);
-  error.status = 404;
-  next(error);
+router.post("/token", async (req, res) => {
+  const { clientSecret } = req.body;
+  try {
+    const domain = await Domain.findOne({
+      where: { clientSecret },
+      include: {
+        model: User,
+        attribute: ["nick", "id"],
+      },
+    });
+    if (!domain) {
+      return res.status(401).json({
+        code: 401,
+        message: "등록되지 않은 도메인입니다. 먼저 도메인을 등록하세요",
+      });
+    }
+    const token = jwt.sign(
+      {
+        id: domain.User.id,
+        nick: domain.User.nick,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: "1m", // 1분
+        issuer: "nodebird",
+      }
+    );
+    return res.json({
+      code: 200,
+      message: "토큰이 발급되었습니다",
+      token,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      code: 500,
+      message: "서버 에러",
+    });
+  }
 });
 
-app.use((err, req, res, next) => {
-  res.locals.message = err.message;
-  res.locals.error = process.env.NODE_ENV !== "production" ? err : {};
-  res.status(err.status || 500);
-  res.render("error");
+router.get("/test", verifyToken, (req, res) => {
+  res.json(req.decoded);
 });
 
-app.listen(app.get("port"), () => {
-  console.log(app.get("port"), "번 포트에서 대기중");
+router.get("/posts/my", verifyToken, (req, res) => {
+  Post.findAll({ where: { userId: req.decoded.id } })
+    .then((posts) => {
+      console.log(posts);
+      res.json({
+        code: 200,
+        payload: posts,
+      });
+    })
+    .catch((error) => {
+      console.error(error);
+      return res.status(500).json({
+        code: 500,
+        message: "서버 에러",
+      });
+    });
 });
+
+router.get("/posts/hashtag/:title", verifyToken, async (req, res) => {
+  try {
+    const hashtag = await Hashtag.findOne({
+      where: { title: req.params.title },
+    });
+    if (!hashtag) {
+      return res.status(404).json({
+        code: 404,
+        message: "검색 결과가 없습니다",
+      });
+    }
+    const posts = await hashtag.getPosts();
+    return res.json({
+      code: 200,
+      payload: posts,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      code: 500,
+      message: "서버 에러",
+    });
+  }
+});
+
+module.exports = router;

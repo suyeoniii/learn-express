@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 
 const router = express.Router();
+const URL = "http://local";
 
 router.get("/test", async (req, res, next) => {
   // 토큰 테스트 라우터
